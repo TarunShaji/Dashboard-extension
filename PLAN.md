@@ -18,27 +18,294 @@ Tasks appear on the dashboard instantly — no copy-pasting, no manual entry.
 
 ---
 
+## The Three Pieces of Code
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  PIECE 1: Chrome Extension  (runs inside Chrome)                    │
+│  PIECE 2: email-extractor   (Hono/Bun server, runs on your Mac)     │
+│  PIECE 3: CubeHQ Dashboard  (Next.js, already exists — not touched) │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## How the Extension Works Inside Chrome
+
+Chrome extensions cannot directly touch any webpage's content — they run in their own isolated world. So the extension has two distinct parts that work together:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  GMAIL TAB (mail.google.com)                                 │
+│                                                              │
+│  content.js ← Chrome injects this into every Gmail tab      │
+│                                                              │
+│  It sits silently doing NOTHING until popup.js wakes it up  │
+│  It can READ the Gmail DOM (email body, subject, sender)     │
+│  It cannot make API calls directly                           │
+└───────────────────────┬──────────────────────────────────────┘
+                        │  chrome.runtime.sendMessage()
+                        │  (only fires when user clicks Analyze Email)
+                        ▼
+┌──────────────────────────────────────────────────────────────┐
+│  EXTENSION POPUP (the small window when you click the icon)  │
+│                                                              │
+│  popup.html + popup.js + popup.css                           │
+│  This is the full UI — dropdowns, task list, buttons         │
+│  It CAN make fetch() calls to external servers               │
+│  It sends messages to content.js to get the email body       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+`manifest.json` is the config file that wires everything together — it tells Chrome:
+- Which script to inject into Gmail (`content.js`)
+- What the popup HTML file is
+- Which domains the extension is allowed to talk to
+
+### content.js — What It Is
+
+content.js is declared in `manifest.json` like this:
+```json
+{
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["content/content.js"]
+    }
+  ]
+}
+```
+
+This tells Chrome: *"Every time the user opens a tab matching mail.google.com, inject content.js into that page."*
+
+content.js is completely passive — it just sits as a listener:
+```js
+// content.js — the entire file is basically this
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "getEmailBody") {
+    const parts = [...document.querySelectorAll('.a3s.aiL')]
+      .filter(el => el.offsetParent !== null)  // only expanded emails
+    const body    = parts.map(el => el.innerText.trim()).join('\n\n---\n\n')
+    const subject = document.querySelector('.hP')?.innerText ?? ''
+    const sender  = document.querySelector('.gD')?.getAttribute('email') ?? ''
+    sendResponse({ body, subject, sender })
+  }
+})
+```
+
+It only wakes up when popup.js sends it a message. No DOM reading happens until "Analyze Email" is clicked.
+
+### Why content.js has to exist at all
+
+```
+popup.js                          Gmail tab DOM
+(extension popup)                 (the actual page)
+      │                                 │
+      │  popup.js CANNOT reach          │
+      │  across into the tab's DOM ✗    │
+      │                                 │
+      │   content.js bridges them       │
+      │         │                       │
+      └────────►│◄──────────────────────┘
+            content.js
+         (lives inside the tab,
+          can read the DOM,
+          can talk back to popup.js)
+```
+
+### Does it inject into ALL Gmail tabs?
+
+Yes — Chrome injects content.js into every Gmail tab. But it does nothing on its own.
+When the user clicks the extension icon, popup.js sends a message **only to the active tab** the user is currently on. Other Gmail tabs are never touched.
+
+```
+Tab 1: Gmail inbox          ← content.js injected, doing nothing
+Tab 2: Gmail email open     ← content.js injected, doing nothing
+Tab 3: Gmail email open     ← content.js injected, doing nothing
+
+User clicks extension icon while on Tab 2
+  → popup.js asks ONLY Tab 2 for the email body
+  → Tab 1 and Tab 3 are never touched
+```
+
+If user clicks the icon on the inbox (no email open) → `querySelector('.a3s.aiL')` returns nothing → popup shows **"Please open an email first"**.
+
+---
+
+## Complete End-to-End Flow
+
+```
+USER OPENS GMAIL AND OPENS A CLIENT EMAIL
+         │
+         ▼
+content.js (already injected silently into the Gmail tab)
+  just a listener — doing nothing, waiting
+         │
+USER CLICKS THE EXTENSION ICON
+         │
+         ▼
+popup.html opens (the small window)
+popup.js runs:
+
+  ── ON POPUP OPEN ──────────────────────────────────────────
+  GET http://localhost:3000/api/clients?lite=1
+  credentials: include  ← browser auto-attaches dashboard cookie
+  → returns [{ id: "uuid", name: "Client Name" }, ...]
+  → populates the Client dropdown
+
+  User selects:  Client  → "Acme Corp"
+                 Table   → "SEO" / "Email" / "Paid Ads"
+
+  ── USER CLICKS "Analyze Email" ────────────────────────────
+  popup.js  →  chrome.tabs.sendMessage(tabId, { action: "getEmailBody" })
+                         │
+                         ▼
+               content.js wakes up, reads Gmail DOM:
+                 .a3s.aiL  → email body (only expanded ones)
+                 .hP       → subject
+                 .gD       → sender
+                         │
+                         │ sends back { body, subject, sender }
+                         ▼
+  popup.js receives email data
+
+  popup.js  →  POST http://localhost:8787/extract-tasks
+               Body: { email_body: "...", table: "seo" }
+                         │
+                         ▼
+               email-extractor (Hono/Bun on your Mac)
+                 router.ts     → receives + validates request
+                 controller.ts → calls createAIClient("openai")
+                 openAIClient  → sends prompt to OpenAI API
+                 OpenAI returns → ["Fix meta descriptions", "Update backlinks", ...]
+                 successResponse → { success: true, data: { tasks: [...] } }
+                         │
+                         ▼
+  popup.js renders task list:
+    ✕ Fix meta descriptions for homepage
+    ✕ Update backlink report for Q2
+    ✕ Review keyword rankings
+
+  User removes any unwanted tasks
+  User sets: Status, Priority (SEO only), ETA (SEO only)
+
+  ── USER CLICKS "Add Tasks" ────────────────────────────────
+  popup.js loops through remaining tasks, one POST per task:
+
+  SEO:
+    POST http://localhost:3000/api/tasks
+    credentials: include
+    { title, client_id, status, priority, eta_end }
+
+  Email:
+    POST http://localhost:3000/api/email-tasks
+    credentials: include
+    { title, client_id, status }          ← no priority/eta_end (strict schema)
+
+  Paid:
+    POST http://localhost:3000/api/paid-tasks
+    credentials: include
+    { title, client_id, status }          ← no priority/eta_end (strict schema)
+
+  Each POST → withAuth() verifies cookie → lifecycle engine →
+  insertOne into MongoDB → task appears on dashboard ✓
+
+  popup.js shows: "3 tasks added successfully ✓"
+```
+
+---
+
+## Why Cookies — The Auth Story
+
+The dashboard login sets an **httpOnly cookie** named `token` in Chrome when you log in at `localhost:3000`. httpOnly means JavaScript can't read it — but Chrome still **automatically sends it** with every fetch request to that domain.
+
+```
+Extension popup.js:
+  fetch("http://localhost:3000/api/tasks", { credentials: "include" })
+                                                    ▲
+                        this one line tells Chrome: │
+                        "attach any cookies you have for this domain"
+
+Chrome sees: I have cookie `token` for localhost:3000
+Chrome attaches it automatically
+
+Dashboard: withAuth() reads cookie → verifies JWT → authorized ✓
+```
+
+**No separate login. No API keys in the extension. User just has to be logged into the dashboard in the same Chrome browser.**
+
+### Who can access the API?
+
+| Who tries | Cookie exists? | CORS passes? | Gets data? |
+|---|---|---|---|
+| You (logged in, using extension) | ✓ | ✓ | ✓ |
+| Random person on the internet | ✗ | ✗ | ✗ |
+| Malicious website | ✓ (if you're logged in) | ✗ (origin blocked) | ✗ |
+| Another Chrome extension | ✗ | ✗ | ✗ |
+
+Protected by two independent layers — JWT cookie auth AND CORS origin checking. Both must pass.
+
+---
+
+## What Runs Where (Local Dev)
+
+```
+Your Mac
+├── Terminal 1: cd CubeHQ-Dashboard && npm run dev   → localhost:3000
+├── Terminal 2: cd email-extractor && bun run dev    → localhost:8787
+└── Chrome
+    ├── Tab: localhost:3000/dashboard  (must be logged in)
+    ├── Tab: mail.google.com           (Gmail)
+    └── Extension: loaded unpacked from chrome-extension/ folder
+```
+
+---
+
+## Publishing the Extension
+
+**During development (what you use now):**
+- `chrome://extensions` → enable Developer Mode → Load unpacked → select `chrome-extension/` folder
+- Extension appears instantly, no review, no publishing
+- Code change → hit refresh icon on the extension card in `chrome://extensions`
+
+**When ready to share with your team:**
+
+| Option | What it means | Best for |
+|---|---|---|
+| Keep as unpacked | Everyone loads it manually | Just you |
+| Chrome Web Store — Unlisted | Published, accessible via direct link only | Small internal team ✓ |
+| Chrome Web Store — Private | Restricted to your Google Workspace domain | Company-wide rollout |
+| Chrome Web Store — Public | Anyone can find and install it | Public tools |
+
+**Recommended: Unlisted.** Publish once, share the link, team installs it, Chrome auto-updates everyone silently when you push updates. No manual reloading.
+
+Publishing requires: Chrome Web Store developer account ($5 one-time), a zip of `chrome-extension/`, screenshots + description. Google reviews take 1-3 days first time, hours for updates.
+
+---
+
 ## Architecture Overview
 
 ```
 Gmail (Chrome Tab)
-  └─ content.js (injected)
-       └─ reads expanded email body from DOM (.a3s.aiL)
-            └─ returns { subject, body, sender } to popup
+  └─ content.js (injected by Chrome, passive listener)
+       └─ wakes up only when popup.js sends "getEmailBody" message
+            └─ reads DOM, returns { subject, body, sender }
 
-Chrome Extension Popup
-  ├─ Step 1: GET http://localhost:3000/api/clients?lite=1   → populate client dropdown
-  ├─ Step 2: User picks Client + Table (SEO / Email / Paid Ads)
-  ├─ Step 3: "Analyze Email" clicked
-  │    └─ POST http://localhost:8787/extract-tasks
-  │         └─ Hono/Bun AI Service calls OpenAI → returns [{ title }]
-  ├─ Step 4: Shows task titles — user can remove any
-  ├─ Step 5: User sets Status + Priority + ETA (applies to all tasks)
-  └─ Step 6: "Add Tasks" clicked
-       └─ POSTs each task individually (one POST per task):
-            SEO      → POST http://localhost:3000/api/tasks
-            Email    → POST http://localhost:3000/api/email-tasks
-            Paid Ads → POST http://localhost:3000/api/paid-tasks
+Chrome Extension Popup (popup.js)
+  ├─ ON OPEN:  GET  localhost:3000/api/clients?lite=1  → client dropdown
+  ├─ ON ANALYZE EMAIL CLICK:
+  │    ├─ message → content.js → get email body
+  │    └─ POST localhost:8787/extract-tasks → AI task titles
+  └─ ON ADD TASKS CLICK:
+       ├─ SEO      → POST localhost:3000/api/tasks
+       ├─ Email    → POST localhost:3000/api/email-tasks
+       └─ Paid Ads → POST localhost:3000/api/paid-tasks
+
+email-extractor (Hono/Bun — localhost:8787)
+  └─ stateless, no DB, just calls OpenAI and returns task titles
+
+CubeHQ Dashboard (Next.js — localhost:3000)
+  └─ untouched — extension reuses existing API endpoints + auth
 ```
 
 ---
@@ -97,7 +364,7 @@ Dashboard_extension/
 │   ├── common/
 │   │   ├── clients/
 │   │   │   └── ai/
-│   │   │       ├── iAIClient.ts            ← AIProvider interface
+│   │   │       ├── iAIClient.ts            ← IAIClient interface
 │   │   │       ├── openAIClient.ts         ← OpenAI implementation
 │   │   │       └── factory.ts              ← createAIClient("openai" | "anthropic")
 │   │   ├── config/
@@ -120,16 +387,46 @@ Dashboard_extension/
 │           └── index.ts                    ← barrel export
 │
 └── chrome-extension/                       ← Chrome Extension
-    ├── manifest.json
+    ├── manifest.json                       ← declares permissions, injects content.js, sets popup
     ├── content/
-    │   └── content.js                      ← injected into Gmail, reads DOM
+    │   └── content.js                      ← injected into every Gmail tab, reads DOM on demand
     ├── popup/
-    │   ├── popup.html
-    │   ├── popup.js
-    │   └── popup.css
+    │   ├── popup.html                      ← the UI window structure
+    │   ├── popup.js                        ← orchestration: clients → analyze → tasks → post
+    │   └── popup.css                       ← styling
     └── icons/
         └── icon.png
 ```
+
+---
+
+## Extension Popup — UI Flow
+
+```
+┌──────────────────────────────────────┐
+│  Gmail Task Extractor                │
+│                                      │
+│  Client   [ Select client...    ▼ ]  │  ← GET /api/clients?lite=1 on popup open
+│  Table    [ SEO / Email / Paid  ▼ ]  │  ← static dropdown
+│                                      │
+│           [ Analyze Email ]          │  ← triggers content.js + AI call
+│                                      │
+│  ── Suggested Tasks ──               │
+│  ✕  Fix meta descriptions for HP     │  ← user can remove with ✕
+│  ✕  Update backlink report           │
+│  ✕  Review keyword rankings          │
+│                                      │
+│  Status   [ No status         ▼ ]    │  ← shown for all tables
+│  Priority [ No priority       ▼ ]    │  ← SEO only
+│  ETA      [ dd/mm/yyyy         ]     │  ← SEO only
+│                                      │
+│  [ Cancel ]        [ Add Tasks ]     │  ← posts one request per task
+└──────────────────────────────────────┘
+```
+
+- AI fills **title only** — everything else is user-selected
+- One config applies to all tasks in the batch
+- **Priority and ETA only shown for SEO** — EmailTaskSchema and PaidTaskSchema use `.strict()`, sending unknown fields returns 400
 
 ---
 
@@ -206,9 +503,7 @@ export const settings = {
 ```typescript
 // common/errors/index.ts
 export class HttpError extends Error {
-  constructor(message: string, public status: number) {
-    super(message)
-  }
+  constructor(message: string, public status: number) { super(message) }
 }
 
 // index.ts — global handler
@@ -222,8 +517,6 @@ app.onError((err, c) => {
 ---
 
 ## Response Envelope — per `system-architecture.md §6.3`
-
-Every response uses the same wrapper:
 
 ```typescript
 successResponse(c, { tasks: [...] }, 200)
@@ -243,7 +536,7 @@ const app = new Hono()
 
 app.use(requestId())
 app.use(cors({
-  origin: "*",   // extension origin is chrome-extension://* — wildcard for dev/internal tool
+  origin: "*",
   allowMethods: ["GET", "POST", "OPTIONS"],
   allowHeaders: ["Content-Type"],
   credentials: false,
@@ -295,12 +588,12 @@ Response 400:
 
 ---
 
-## Gmail DOM Extraction (content.js)
+## Gmail DOM Extraction
 
 ```js
-// Get only EXPANDED (visible) email bodies in the current thread
+// content.js — triggered by popup.js message only
 const parts = [...document.querySelectorAll('.a3s.aiL')]
-  .filter(el => el.offsetParent !== null)  // collapsed emails return null
+  .filter(el => el.offsetParent !== null)  // only visible/expanded emails
 
 const body    = parts.map(el => el.innerText.trim()).join('\n\n---\n\n')
 const subject = document.querySelector('.hP')?.innerText ?? ''
@@ -308,40 +601,9 @@ const sender  = document.querySelector('.gD')?.getAttribute('email') ?? ''
 ```
 
 - Single email → extracts that one
-- Thread with one email expanded → extracts only that one
-- Thread with multiple expanded → concatenates all (more context = better AI output)
+- Thread, one email expanded → extracts only that one
+- Thread, multiple expanded → concatenates all (more context = better AI output)
 - No email open → popup shows "Please open an email first"
-
----
-
-## Extension Popup — User Flow
-
-```
-┌──────────────────────────────────────┐
-│  Gmail Task Extractor                │
-│                                      │
-│  Client   [ Select client...    ▼ ]  │  ← GET /api/clients?lite=1
-│  Table    [ SEO / Email / Paid  ▼ ]  │  ← static
-│                                      │
-│           [ Analyze Email ]          │
-│                                      │
-│  ── Suggested Tasks ──               │
-│  ✕  Fix meta descriptions for HP     │
-│  ✕  Update backlink report           │
-│  ✕  Review keyword rankings          │
-│                                      │
-│  Status   [ No status         ▼ ]    │
-│  Priority [ No priority       ▼ ]    │
-│  ETA      [ dd/mm/yyyy         ]     │
-│                                      │
-│  [ Cancel ]        [ Add Tasks ]     │
-└──────────────────────────────────────┘
-```
-
-- AI fills **title only** — everything else is user-selected
-- One set of Status/Priority/ETA applies to all tasks in the batch
-- User can remove individual tasks with ✕
-- Category field not shown — not present in Email/Paid schemas, optional on SEO
 
 ---
 
@@ -350,7 +612,7 @@ const sender  = document.querySelector('.gD')?.getAttribute('email') ?? ''
 ### Fetch Clients
 ```
 GET  http://localhost:3000/api/clients?lite=1
-Headers: (cookie auto-sent by browser — user is logged in)
+credentials: include  (dashboard cookie auto-attached by browser)
 Returns: [{ id: "uuid", name: "Client Name", ... }]
 ```
 
@@ -361,49 +623,49 @@ credentials: include
 Body: {
   title:     string,           // required — AI generated
   client_id: string,           // required — uuid from picker
-  status?:   "To Be Started" | "In Progress" | "Pending Review" | "Completed" | "Implemented" | "Blocked",
-  priority?: "P0" | "P1" | "P2" | "P3",   // defaults to P2
-  eta_end?:  string,           // ISO date string e.g. "2026-06-01"
+  status?:   "To Be Started" | "In Progress" | "Pending Review"
+             | "Completed" | "Implemented" | "Blocked",
+  priority?: "P0" | "P1" | "P2" | "P3",   // optional, defaults to P2
+  eta_end?:  string,                       // optional, ISO date e.g. "2026-06-01"
 }
+// FORBIDDEN — causes 400: internal_approval, client_link_visible,
+//             client_approval, client_feedback_note, client_feedback_at
 ```
 
 ### Create Email Task
 ```
 POST http://localhost:3000/api/email-tasks
 credentials: include
-Body: { title, client_id, status?, priority?, eta_end? }
+Body: {
+  title:     string,           // required — AI generated
+  client_id: string,           // required — uuid from picker
+  status?:   "To Be Started" | "In Progress" | "Pending Review"
+             | "Completed" | "Implemented" | "Blocked",
+}
+// ⚠️  Schema is .strict() — DO NOT send priority or eta_end
+//     they are not in EmailTaskSchema → 400 validation error
+// FORBIDDEN — causes 400: internal_approval, client_approval,
+//             client_feedback_note, client_feedback_at
 ```
 
 ### Create Paid Ads Task
 ```
 POST http://localhost:3000/api/paid-tasks
 credentials: include
-Body: { title, client_id, status?, priority?, eta_end? }
+Body: {
+  title:     string,           // required — AI generated
+  client_id: string,           // required — uuid from picker
+  status?:   "To Be Started" | "In Progress" | "Pending Review"
+             | "Completed" | "Implemented" | "Blocked",
+}
+// ⚠️  Schema is .strict() — DO NOT send priority or eta_end
+//     they are not in PaidTaskSchema → 400 validation error
+// FORBIDDEN — causes 400: internal_approval, client_approval,
+//             client_feedback_note, client_feedback_at
 ```
 
-> Each task is one individual POST — goes through the full lifecycle engine, validation,
-> and notifications identical to manually adding from the dashboard.
-
----
-
-## Authentication — How It Works
-
-Dashboard uses JWT in an **httpOnly cookie** named `token`.
-
-Extension does NOT need its own login:
-- User is logged into `localhost:3000` in Chrome
-- Extension uses `credentials: 'include'` on every fetch → browser sends cookie automatically
-- `withAuth()` on the dashboard reads the cookie, verifies JWT, request goes through
-
-```js
-// popup.js
-fetch('http://localhost:3000/api/tasks', {
-  method: 'POST',
-  credentials: 'include',       // ← sends the dashboard session cookie
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ title, client_id, status, priority, eta_end })
-})
-```
+> Each task is one individual POST — goes through the full lifecycle engine,
+> validation, and notifications identical to manually adding from the dashboard.
 
 ---
 
@@ -413,7 +675,7 @@ fetch('http://localhost:3000/api/tasks', {
 ```env
 OPENAI_API_KEY=sk-...        # Required
 PORT=8787                    # Hono server port (default 8787)
-OPENAI_MODEL=gpt-4o-mini     # Model (cheap + fast for task extraction)
+OPENAI_MODEL=gpt-4o-mini     # Model to use (cheap + fast for task extraction)
 ```
 
 ### `email-extractor/.env.example`
@@ -423,11 +685,17 @@ PORT=8787
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-### `CubeHQ-Dashboard/.env` — one addition for CORS
+### `CubeHQ-Dashboard/.env` — CORS for extension requests
+
+The dashboard's `handleCORS` reads `CORS_ORIGINS`. If unset → falls back to wildcard `*` automatically. No change needed for local dev if `CORS_ORIGINS` is not set.
+
+If `CORS_ORIGINS` is already set to specific domains, extension requests will be blocked — Chrome extension origins look like `chrome-extension://abcdef123456` (a specific ID). Fix: after loading the extension in Chrome, copy its ID from `chrome://extensions` and add it:
+
 ```env
-# Add chrome-extension://* to existing CORS_ORIGINS
-CORS_ORIGINS=http://localhost:3000,chrome-extension://*
+CORS_ORIGINS=http://localhost:3000,chrome-extension://YOUR_EXTENSION_ID_HERE
 ```
+
+Simplest for local dev: leave `CORS_ORIGINS` unset → server uses `*` → extension requests go through.
 
 ---
 
@@ -436,9 +704,9 @@ CORS_ORIGINS=http://localhost:3000,chrome-extension://*
 - [ ] **Bun installed** — `curl -fsSL https://bun.sh/install | bash`
 - [ ] **OpenAI API key** — already have it, goes in `email-extractor/.env`
 - [ ] **Dashboard running locally** — `npm run dev` in `CubeHQ-Dashboard/`
-- [ ] **Logged into dashboard in Chrome** — session cookie must exist
-- [ ] **Chrome Developer Mode** — `chrome://extensions` → enable Developer Mode
-- [ ] **CORS_ORIGINS updated** in `CubeHQ-Dashboard/.env` to include `chrome-extension://*`
+- [ ] **Logged into dashboard in Chrome** — session cookie must exist for auth to work
+- [ ] **Chrome Developer Mode** — `chrome://extensions` → enable Developer Mode (top right toggle)
+- [ ] **CORS check** — if `CORS_ORIGINS` is set in dashboard `.env`, add extension ID to it
 
 ---
 
@@ -457,11 +725,11 @@ CORS_ORIGINS=http://localhost:3000,chrome-extension://*
 10. `index.ts` — app entry, CORS, error handler, route registration
 
 ### Phase 2 — `chrome-extension/`
-11. `manifest.json`
-12. `content/content.js` — Gmail DOM reader
+11. `manifest.json` — permissions, content script declaration, popup declaration
+12. `content/content.js` — Gmail DOM reader, message listener
 13. `popup/popup.html` — UI structure
 14. `popup/popup.css` — styling
-15. `popup/popup.js` — orchestration: fetch clients → analyze → show tasks → post
+15. `popup/popup.js` — fetch clients → analyze email → show tasks → post to dashboard
 
 ### Phase 3 — End-to-end test
 16. `bun run dev` in `email-extractor/`
@@ -479,4 +747,4 @@ CORS_ORIGINS=http://localhost:3000,chrome-extension://*
 - No UI framework in the extension — plain HTML/CSS/JS, no build step
 - No BullMQ workers — request is fast enough to be synchronous
 - No Drizzle ORM — no DB in this service
-- No publishing to Chrome Web Store — loaded unpacked for internal use
+- No publishing to Chrome Web Store — loaded unpacked for internal use (Unlisted when ready to share)
