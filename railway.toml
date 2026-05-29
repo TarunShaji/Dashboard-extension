@@ -1,6 +1,3 @@
-[build]
-rootDirectory = "email-extractor"
-
 [deploy]
 startCommand = "bun run index.ts"
 healthcheckPath = "/health"

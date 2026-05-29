@@ -2,10 +2,10 @@ FROM oven/bun:1-alpine
 
 WORKDIR /app
 
-COPY package.json bun.lock ./
+COPY email-extractor/package.json email-extractor/bun.lock ./
 RUN bun install --frozen-lockfile
 
-COPY . .
+COPY email-extractor/ .
 
 EXPOSE 8787
 
