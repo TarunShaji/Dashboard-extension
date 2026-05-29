@@ -1,7 +1,7 @@
 'use strict'
 
 const DASHBOARD_URL = 'https://dashboard.cubehq.ai'
-const EXTRACTOR_URL = 'https://REPLACE_WITH_RAILWAY_URL'
+const EXTRACTOR_URL = 'https://dashboard-extension-production.up.railway.app'
 
 const ENDPOINTS = {
   seo:   '/api/tasks',

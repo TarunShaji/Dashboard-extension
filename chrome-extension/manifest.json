@@ -7,7 +7,7 @@
   "host_permissions": [
     "https://mail.google.com/*",
     "https://dashboard.cubehq.ai/*",
-    "https://REPLACE_WITH_RAILWAY_URL/*"
+    "https://dashboard-extension-production.up.railway.app/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
