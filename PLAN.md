@@ -1,5 +1,78 @@
 # Gmail Task Extractor — Extension + AI Service Plan
 
+---
+
+## ⚡ HANDOFF — Read This First (Current State)
+
+**Phase 1 (`email-extractor/`) is fully built and verified. Start on Phase 2 (`chrome-extension/`).**
+
+### What exists on disk right now
+
+```
+Dashboard_extension/
+├── .gitignore                          ✅ done
+├── PLAN.md                             ✅ this file
+│
+├── email-extractor/                    ✅ COMPLETE — Hono/Bun AI service
+│   ├── index.ts                        ✅ app entry, CORS, error handler, /extract-tasks + /health
+│   ├── package.json                    ✅ deps installed (bun.lock present)
+│   ├── tsconfig.json                   ✅ ESNext, bundler resolution, @/ alias
+│   ├── biome.json                      ✅ linter/formatter
+│   ├── .env.example                    ✅ template (OPENAI_API_KEY, PORT, OPENAI_MODEL)
+│   ├── .env                            ⚠️  EXISTS but needs real OPENAI_API_KEY filled in
+│   ├── common/config/settings.ts       ✅ env var access, throws on missing required
+│   ├── common/errors/index.ts          ✅ HttpError class
+│   ├── common/response/types.ts        ✅ ApiSuccessResponse<T> / ApiErrorResponse<E>
+│   ├── common/response/helpers.ts      ✅ successResponse() / errResponse()
+│   ├── common/clients/ai/iAIClient.ts  ✅ IAIClient interface
+│   ├── common/clients/ai/openAIClient.ts ✅ OpenAI impl (json_schema format, max_tokens:500, error wrapping)
+│   ├── common/clients/ai/factory.ts    ✅ createAIClient()
+│   ├── controllers/extract/types.ts    ✅ ExtractInput / ExtractOutput types
+│   ├── controllers/extract/controller.ts ✅ calls AI, returns { title }[]
+│   ├── routers/extract/types.ts        ✅ Zod schema (email_body, table: seo|email|paid)
+│   ├── routers/extract/router.ts       ✅ POST / with zValidator, calls controller
+│   └── routers/extract/index.ts        ✅ barrel export
+│
+└── chrome-extension/                   ⬜ NOT STARTED — build this next
+    ├── manifest.json                   ⬜
+    ├── content/content.js              ⬜
+    ├── popup/popup.html                ⬜
+    ├── popup/popup.css                 ⬜
+    ├── popup/popup.js                  ⬜
+    └── icons/icon48.png + icon128.png  ⬜
+```
+
+### Verified working
+- `bun run dev` in `email-extractor/` starts the server on port 8787
+- `GET /health` returns `{ "status": "ok" }`
+- `POST /extract-tasks` with `{ email_body, table }` calls OpenAI and returns `{ success: true, data: { tasks: [...] } }`
+
+### Before running email-extractor
+Fill in `email-extractor/.env`:
+```env
+OPENAI_API_KEY=sk-...       ← REQUIRED, currently empty
+PORT=8787
+OPENAI_MODEL=gpt-4o-mini
+```
+
+### Key decisions already made (don't revisit)
+- `openAIClient.ts` uses `json_schema` response format (not `json_object`) → guaranteed `{ tasks: string[] }` shape, no fallback shape-detection needed
+- `max_tokens: 500` cap on OpenAI response
+- OpenAI API errors are wrapped with status code passthrough via `HttpError`
+- `choices[0]` is explicitly guarded before accessing `.content`
+- Unknown `table` keys log a warning but don't throw (fall back to generic context)
+
+### Next immediate step
+Build `chrome-extension/` in this order:
+1. `manifest.json` — MV3, permissions: activeTab + scripting, host_permissions for mail.google.com + localhost:3000 + localhost:8787
+2. `content/content.js` — passive Gmail DOM reader, responds to `getEmailBody` message
+3. `popup/popup.html` — UI shell
+4. `popup/popup.css` — styling
+5. `popup/popup.js` — full orchestration (fetch clients → analyze → show tasks → post)
+6. `icons/` — two PNG icons (48×48 and 128×128)
+
+---
+
 > Architecture follows `system-architecture.md` (Bun + Hono + TypeScript).
 > The `db/` folder in this repo is reference-only — schemas from CubeHQ-Dashboard, not touched.
 
@@ -712,30 +785,36 @@ Simplest for local dev: leave `CORS_ORIGINS` unset → server uses `*` → exten
 
 ## Build Order
 
-### Phase 1 — `email-extractor/` (Hono/Bun AI service)
-1. `package.json` + `tsconfig.json` + `biome.json`
-2. `common/config/settings.ts` — env var access
-3. `common/errors/index.ts` — HttpError
-4. `common/response/types.ts` + `helpers.ts` — response envelope
-5. `common/clients/ai/iAIClient.ts` — interface
-6. `common/clients/ai/openAIClient.ts` — OpenAI implementation + prompt
-7. `common/clients/ai/factory.ts` — createAIClient()
-8. `controllers/extract/types.ts` + `controller.ts` — business logic
-9. `routers/extract/types.ts` + `router.ts` + `index.ts` — Hono route
-10. `index.ts` — app entry, CORS, error handler, route registration
+### Phase 1 — `email-extractor/` (Hono/Bun AI service) ✅ DONE
+1. ✅ `package.json` + `tsconfig.json` + `biome.json`
+2. ✅ `common/config/settings.ts` — env var access
+3. ✅ `common/errors/index.ts` — HttpError
+4. ✅ `common/response/types.ts` + `helpers.ts` — response envelope
+5. ✅ `common/clients/ai/iAIClient.ts` — interface
+6. ✅ `common/clients/ai/openAIClient.ts` — OpenAI implementation + prompt
+7. ✅ `common/clients/ai/factory.ts` — createAIClient()
+8. ✅ `controllers/extract/types.ts` + `controller.ts` — business logic
+9. ✅ `routers/extract/types.ts` + `router.ts` + `index.ts` — Hono route
+10. ✅ `index.ts` — app entry, CORS, error handler, route registration
+11. ✅ `.gitignore` — excludes db/, system-architecture.md, .env, node_modules, etc.
 
-### Phase 2 — `chrome-extension/`
-11. `manifest.json` — permissions, content script declaration, popup declaration
-12. `content/content.js` — Gmail DOM reader, message listener
-13. `popup/popup.html` — UI structure
-14. `popup/popup.css` — styling
-15. `popup/popup.js` — fetch clients → analyze email → show tasks → post to dashboard
+> Server boots and `/health` returns `{ status: "ok" }`. Verified with smoke test.
+>
+> Still needed before running: create `email-extractor/.env` with your real `OPENAI_API_KEY`.
 
-### Phase 3 — End-to-end test
-16. `bun run dev` in `email-extractor/`
-17. `npm run dev` in `CubeHQ-Dashboard/`
-18. Load extension: `chrome://extensions` → Load unpacked → select `chrome-extension/`
-19. Open Gmail → open a client email → click extension icon → test full flow
+### Phase 2 — `chrome-extension/` ⬜ TODO
+12. `manifest.json` — permissions, content script declaration, popup declaration
+13. `content/content.js` — Gmail DOM reader, message listener
+14. `popup/popup.html` — UI structure
+15. `popup/popup.css` — styling
+16. `popup/popup.js` — fetch clients → analyze email → show tasks → post to dashboard
+17. `icons/icon48.png` + `icons/icon128.png` — extension icons
+
+### Phase 3 — End-to-end test ⬜ TODO
+18. `bun run dev` in `email-extractor/`
+19. `npm run dev` in `CubeHQ-Dashboard/`
+20. Load extension: `chrome://extensions` → Load unpacked → select `chrome-extension/`
+21. Open Gmail → open a client email → click extension icon → test full flow
 
 ---
 

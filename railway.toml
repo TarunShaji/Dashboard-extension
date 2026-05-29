@@ -1,0 +1,8 @@
+[build]
+rootDirectory = "email-extractor"
+
+[deploy]
+startCommand = "bun run index.ts"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"

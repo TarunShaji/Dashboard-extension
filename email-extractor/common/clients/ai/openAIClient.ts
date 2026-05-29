@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import { settings } from "@/common/config/settings";
 import { HttpError } from "@/common/errors";
+import { log } from "@/common/logger";
+import { saveRun } from "@/common/debug/saveRun";
 import type { IAIClient } from "./iAIClient";
 
 const TABLE_CONTEXT: Record<string, string> = {
@@ -32,6 +34,9 @@ If no tasks are found, return { "tasks": [] }.`;
 
     const userPrompt = `Extract tasks from this email:\n\n${emailBody}`;
 
+    log.info("OPENAI", `Sending request`, { model: settings.openai.model, table, prompt_chars: emailBody.length })
+    const t0 = Date.now()
+
     let response: OpenAI.Chat.ChatCompletion;
     try {
       response = await this.client.chat.completions.create({
@@ -55,13 +60,23 @@ If no tasks are found, return { "tasks": [] }.`;
             },
           },
         },
-        max_tokens: 500,
+        max_completion_tokens: 500,
         temperature: 0.2,
       });
     } catch (err: unknown) {
       const status = (err as { status?: number }).status ?? 502;
+      log.error("OPENAI", `Request failed (${status})`, err)
       throw new HttpError(`OpenAI request failed: ${(err as Error).message}`, status);
     }
+
+    const elapsed = Date.now() - t0
+    const usage   = response.usage
+    log.success("OPENAI", `Response received in ${elapsed}ms`, {
+      model:             response.model,
+      prompt_tokens:     usage?.prompt_tokens,
+      completion_tokens: usage?.completion_tokens,
+      total_tokens:      usage?.total_tokens,
+    })
 
     const message = response.choices[0]?.message?.content;
     if (!message) throw new HttpError("OpenAI returned no content", 502);
@@ -73,8 +88,22 @@ If no tasks are found, return { "tasks": [] }.`;
       throw new HttpError("AI returned invalid JSON", 502);
     }
 
-    return parsed.tasks.filter(
+    const tasks = parsed.tasks.filter(
       (t): t is string => typeof t === "string" && t.trim().length > 0,
     );
+
+    saveRun({
+      table,
+      emailBody,
+      systemPrompt,
+      userPrompt,
+      rawResponse: message,
+      tasks,
+      model:       response.model,
+      usage:       usage ?? null,
+      durationMs:  elapsed,
+    })
+
+    return tasks
   }
 }

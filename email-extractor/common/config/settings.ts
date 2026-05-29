@@ -11,5 +11,7 @@ export const settings = {
   },
   server: {
     port: Number(process.env["PORT"]) || 8787,
+    corsOrigin: required("CORS_ORIGIN"),
+    publicUrl: required("PUBLIC_URL"),
   },
 };

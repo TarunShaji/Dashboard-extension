@@ -4,6 +4,9 @@ system-architecture.md
 
 # ── Environment variables ──
 .env
+
+# ── Chrome extension private key ──
+extension.pem
 .env.local
 .env.*.local
 
@@ -30,6 +33,9 @@ out/
 .idea/
 *.swp
 *.swo
+
+# ── Debug output ──
+email-extractor/outputs/
 
 # ── Logs ──
 *.log

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard Email Extractor</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header -->
+    <header class="header">
+      <div class="header-icon">⚡</div>
+      <div>
+        <div class="header-title">Task Extractor</div>
+        <div class="header-sub">CubeHQ</div>
+      </div>
+    </header>
+
+    <!-- Status message (errors / info / success) -->
+    <div id="status-msg" class="status-msg" style="display:none;"></div>
+
+    <!-- Client + Table selectors — always visible -->
+    <div class="form-section">
+      <div class="form-row">
+        <label for="client-select">Client</label>
+        <select id="client-select">
+          <option value="">Loading clients…</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="table-select">Table</label>
+        <select id="table-select">
+          <option value="seo">SEO</option>
+          <option value="email">Email</option>
+          <option value="paid">Paid Ads</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Step 1: Analyze button -->
+    <button id="analyze-btn" class="btn btn-primary btn-full">
+      <span id="analyze-spinner" class="spinner" style="display:none;"></span>
+      Analyze Email
+    </button>
+
+    <!-- Step 2: Email picker (shown after clicking Analyze Email) -->
+    <div id="email-picker-section" style="display:none;">
+      <div class="section-label">Select Emails to Analyze</div>
+      <div id="email-list" class="email-list"></div>
+      <div class="btn-row">
+        <button id="picker-back-btn" class="btn btn-ghost">Back</button>
+        <button id="picker-analyze-btn" class="btn btn-primary" disabled>
+          <span id="picker-spinner" class="spinner" style="display:none;"></span>
+          Analyze Selected
+        </button>
+      </div>
+    </div>
+
+    <!-- Step 3: Tasks section (shown after AI analysis) -->
+    <div id="tasks-section" style="display:none;">
+      <div class="section-label">Suggested Tasks</div>
+      <div id="tasks-list" class="tasks-list"></div>
+      <button id="add-task-btn" class="add-task-btn">+ Add task</button>
+
+      <div class="btn-row">
+        <button id="cancel-btn" class="btn btn-ghost">Cancel</button>
+        <button id="add-btn" class="btn btn-success">
+          <span id="add-spinner" class="spinner" style="display:none;"></span>
+          Add Tasks
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Full-body preview overlay (shown when user clicks View on an email) -->
+  <div id="preview-modal" style="display:none;">
+    <div class="preview-header">
+      <div class="preview-meta">
+        <div id="preview-sender"></div>
+        <div id="preview-date"></div>
+      </div>
+      <button id="preview-close-btn" class="btn btn-ghost preview-close-btn">← Back</button>
+    </div>
+    <div id="preview-body" class="preview-body"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
