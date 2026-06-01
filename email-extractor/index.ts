@@ -49,7 +49,7 @@ app.get("/updates.xml", (c) => {
   const base = settings.server.publicUrl
   const xml = `<?xml version='1.0' encoding='UTF-8'?>
 <gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
-  <app appid='kahibobklkofdemecdepkocnlkmliemi'>
+  <app appid='gcllnllfjddpennkliopepjckehokeop'>
     <updatecheck codebase='${base}/extension.crx' version='1.0' />
   </app>
 </gupdate>`
