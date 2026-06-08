@@ -50,7 +50,7 @@ app.get("/updates.xml", (c) => {
   const xml = `<?xml version='1.0' encoding='UTF-8'?>
 <gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
   <app appid='gcllnllfjddpennkliopepjckehokeop'>
-    <updatecheck codebase='${base}/extension.crx' version='1.0' />
+    <updatecheck codebase='${base}/extension.crx' version='1.1' />
   </app>
 </gupdate>`
   return c.text(xml, 200, { "Content-Type": "application/xml" })
