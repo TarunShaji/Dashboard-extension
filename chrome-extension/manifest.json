@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Dashboard Email Extractor",
   "version": "1.0",
+  "update_url": "https://dashboard-extension-production.up.railway.app/updates.xml",
   "description": "Extract actionable tasks from Gmail emails and post them to your CubeHQ dashboard.",
   "permissions": ["activeTab", "scripting"],
   "host_permissions": [
